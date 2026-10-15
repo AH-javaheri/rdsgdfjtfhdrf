@@ -1,0 +1,760 @@
+local ESX = nil
+local QBCore = nil
+local isOpen = false
+local currentBankLocation = nil
+local currentBankName = nil
+local ESXVer = Config.ESXVer
+local FrameWork = nil
+local adminPanelOpen = false
+
+if Config.FrameWork == "auto" then
+    if GetResourceState('es_extended') == 'started' then
+        if ESXVer == 'new' then
+            ESX = exports['es_extended']:getSharedObject()
+            FrameWork = 'esx'
+        else
+            ESX = nil
+            while ESX == nil do
+                TriggerEvent('esx:getSharedObject', function(obj) ESX = obj end)
+                Citizen.Wait(0)
+            end
+        end
+    elseif GetResourceState('qb-core') == 'started' then
+        QBCore = exports['qb-core']:GetCoreObject()
+        FrameWork = 'qb'
+    end
+elseif Config.FrameWork == "esx" and GetResourceState('es_extended') == 'started' then
+    if ESXVer == 'new' then
+        ESX = exports['es_extended']:getSharedObject()
+        FrameWork = 'esx'
+    else
+        ESX = nil
+        while ESX == nil do
+            TriggerEvent('esx:getSharedObject', function(obj) ESX = obj end)
+            Citizen.Wait(0)
+        end
+    end
+elseif Config.FrameWork == "qb" and GetResourceState('qb-core') == 'started' then
+    QBCore = exports['qb-core']:GetCoreObject()
+    FrameWork = 'qb'
+else
+    print(Locale('admin.noFramework'))
+end
+
+local targetSystem = nil
+if GetResourceState('apex_target') == 'started' then
+    targetSystem = 'apex_target'
+elseif GetResourceState('qb_target') == 'started' then
+    targetSystem = 'qb_target'
+end
+
+local spawnedPeds = {}
+local targetZones = {}
+
+Citizen.CreateThread(function()
+    while true do
+        local sleep = 2000
+        local playerPed = PlayerPedId()
+        local playerCoords = GetEntityCoords(playerPed)
+
+        for _, bank in pairs(Config.BankLocations) do
+            if bank.useped and bank.pedcoords and bank.pedmodel then
+                local distance = #(playerCoords - vector3(bank.pedcoords.x, bank.pedcoords.y, bank.pedcoords.z))
+
+                if distance < 50.0 and not spawnedPeds[bank.id] then
+                    RequestModel(bank.pedmodel)
+                    while not HasModelLoaded(bank.pedmodel) do
+                        Wait(1)
+                    end
+
+                    local ped = CreatePed(4, bank.pedmodel, bank.pedcoords.x, bank.pedcoords.y, bank.pedcoords.z - 1.0,
+                        bank.pedcoords.w, false, true)
+                    FreezeEntityPosition(ped, true)
+                    SetEntityInvincible(ped, true)
+                    SetBlockingOfNonTemporaryEvents(ped, true)
+
+                    spawnedPeds[bank.id] = ped
+
+                    lib.callback('muhaddil_bank:getBankName', false, function(realName)
+                        if targetSystem == 'apex_target' then
+                            exports['apex_target']:addLocalEntity(ped, {
+                                {
+                                    name = 'bank_' .. bank.id,
+                                    icon = 'fas fa-university',
+                                    label = Locale('client.open', realName),
+                                    onSelect = function()
+                                        OpenBank(bank.id, realName)
+                                    end
+                                }
+                            })
+                        elseif targetSystem == 'qb_target' then
+                            exports['qb_target']:AddTargetEntity(ped, {
+                                options = {
+                                    {
+                                        icon = 'fas fa-university',
+                                        label = Locale('client.open', realName),
+                                        action = function()
+                                            OpenBank(bank.id, realName)
+                                        end
+                                    }
+                                },
+                                distance = 2.5
+                            })
+                        end
+                    end, bank.id)
+                elseif distance >= 50.0 and spawnedPeds[bank.id] then
+                    if targetSystem == 'apex_target' then
+                        exports['apex_target']:removeLocalEntity(spawnedPeds[bank.id])
+                    elseif targetSystem == 'qb_target' then
+                        exports['qb_target']:RemoveTargetEntity(spawnedPeds[bank.id])
+                    end
+
+                    DeleteEntity(spawnedPeds[bank.id])
+                    spawnedPeds[bank.id] = nil
+                end
+            end
+        end
+
+        if Config.Checks and Config.Checks.AllowForging and Config.Checks.ForgeLocation and Config.Checks.ForgeLocation.enabled then
+            local fl = Config.Checks.ForgeLocation
+            if fl.useped and fl.pedcoords and fl.pedmodel then
+                local distance = #(playerCoords - vector3(fl.pedcoords.x, fl.pedcoords.y, fl.pedcoords.z))
+                if distance < 50.0 and not spawnedPeds['forge_loc'] then
+                    RequestModel(fl.pedmodel)
+                    while not HasModelLoaded(fl.pedmodel) do Wait(1) end
+                    local ped = CreatePed(4, fl.pedmodel, fl.pedcoords.x, fl.pedcoords.y, fl.pedcoords.z - 1.0,
+                        fl.pedcoords.w, false, true)
+                    FreezeEntityPosition(ped, true)
+                    SetEntityInvincible(ped, true)
+                    SetBlockingOfNonTemporaryEvents(ped, true)
+                    spawnedPeds['forge_loc'] = ped
+                    if targetSystem == 'apex_target' then
+                        exports['apex_target']:addLocalEntity(ped, {
+                            {
+                                name = 'forge_check',
+                                icon = 'fas fa-user-secret',
+                                label = fl.label,
+                                onSelect = function()
+                                    TriggerEvent('muhaddil_bank:openForgeMenu')
+                                end
+                            }
+                        })
+                    elseif targetSystem == 'qb_target' then
+                        exports['qb_target']:AddTargetEntity(ped, {
+                            options = { {
+                                icon = 'fas fa-user-secret',
+                                label = fl.label,
+                                action = function()
+                                    TriggerEvent(
+                                        'muhaddil_bank:openForgeMenu')
+                                end
+                            } },
+                            distance = 2.5
+                        })
+                    end
+                elseif distance >= 50.0 and spawnedPeds['forge_loc'] then
+                    if targetSystem == 'apex_target' then
+                        exports['apex_target']:removeLocalEntity(spawnedPeds['forge_loc'])
+                    elseif targetSystem == 'qb_target' then
+                        exports['qb_target']:RemoveTargetEntity(spawnedPeds['forge_loc'])
+                    end
+                    DeleteEntity(spawnedPeds['forge_loc'])
+                    spawnedPeds['forge_loc'] = nil
+                end
+            end
+        end
+
+        Wait(sleep)
+    end
+end)
+
+local textUiVisible = false
+
+Citizen.CreateThread(function()
+    while true do
+        local sleep = 1000
+        local playerPed = PlayerPedId()
+        local playerCoords = GetEntityCoords(playerPed)
+        local nearInteraction = false
+
+        for _, bank in pairs(Config.BankLocations) do
+            if bank.useped then
+                sleep = 60000
+            end
+
+            if not bank.useped then
+                local distance = #(playerCoords - bank.coords)
+
+                if distance < 15.0 then
+                    sleep = 0
+                    nearInteraction = true
+
+                    DrawMarker(27, bank.coords.x, bank.coords.y, bank.coords.z - 0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.5,
+                        1.5, 0.5, 0, 150, 200, 100, false, false, 2, false, nil, nil, false)
+
+                    if distance < 2.0 then
+                        if not textUiVisible then
+                            lib.showTextUI(Locale('client.open_bank'))
+                            textUiVisible = true
+                        end
+                        if IsControlJustReleased(0, 38) then
+                            OpenBank(bank.id, bank.name)
+                        end
+                    end
+                end
+            end
+        end
+
+        if Config.Checks and Config.Checks.AllowForging and Config.Checks.ForgeLocation and Config.Checks.ForgeLocation.enabled then
+            local fl = Config.Checks.ForgeLocation
+            if (not fl.useped) or (fl.useped and not targetSystem) then
+                local interactCoords = fl.useped and vector3(fl.pedcoords.x, fl.pedcoords.y, fl.pedcoords.z) or fl
+                    .coords
+                local distance = #(playerCoords - interactCoords)
+
+                if distance < 15.0 then
+                    sleep = 0
+                    nearInteraction = true
+
+                    DrawMarker(27, interactCoords.x, interactCoords.y, interactCoords.z - 0.99, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.0,
+                        1.3, 1.3, 0.5, 180, 40, 40, 120, false, false, 2, false, nil, nil, false)
+
+                    if distance < 2.0 then
+                        if not textUiVisible then
+                            lib.showTextUI((fl.label) .. ' [E]')
+                            textUiVisible = true
+                        end
+                        if IsControlJustReleased(0, 38) then
+                            TriggerEvent('muhaddil_bank:openForgeMenu')
+                        end
+                    end
+                end
+            end
+        end
+
+        if not nearInteraction and textUiVisible == true then
+            lib.hideTextUI()
+            textUiVisible = false
+        end
+
+        Wait(sleep)
+    end
+end)
+
+function OpenBank(bankId, bankName)
+    if isOpen then return end
+    local data = lib.callback.await('muhaddil_bank:getData', false, bankId)
+    if not data then
+        return lib.notify({ type = 'error', description = Locale('client.bank_connection_error') })
+    end
+    isOpen = true
+    currentBankLocation = bankId
+    currentBankName = bankName
+    currentBankType = data.currentBankInfo.bankType
+    commissionRate = data.currentBankInfo.commissionRate
+    bankManagementEnabled = Config.BankOwnership.Enabled
+    SetNuiFocus(true, true)
+    SendNUIMessage({
+        action = 'setData',
+        data = data,
+        currentBank = data.currentBankInfo.name,
+        currentBankId = bankId,
+        currentBankType = currentBankType,
+        commissionRate = commissionRate,
+        bankManagementEnabled = bankManagementEnabled,
+        directDebitsEnabled = Config.DirectDebits.Enabled,
+        checksEnabled = Config.Checks.Enabled,
+        scheduleChecksEnabled = Config.Checks.Enabled,
+        transferRequestsEnabled = Config.TransferRequests.Enabled,
+        contactsEnabled = Config.Contacts.Enabled,
+    })
+    SendNUIMessage({
+        action = 'setVisible',
+        data = true
+    })
+end
+
+function CloseBank()
+    isOpen = false
+    currentBankLocation = nil
+    currentBankName = nil
+    SetNuiFocus(false, false)
+    lib.hideTextUI()
+end
+
+AddEventHandler('onResourceStop', function(resourceName)
+    if GetCurrentResourceName() ~= resourceName then return end
+
+    for _, ped in pairs(spawnedPeds) do
+        if DoesEntityExist(ped) then
+            DeleteEntity(ped)
+        end
+    end
+end)
+
+RegisterNetEvent('muhaddil_bank:notify', function(type, message, time)
+    lib.notify({ type = type, description = message, duration = time or 5000 })
+
+    SendNUIMessage({
+        action = 'notify',
+        type = type,
+        message = message,
+        duration = time or 5000
+    })
+end)
+
+RegisterNUICallback('close', function(data, cb)
+    CloseBank()
+    cb('ok')
+end)
+
+RegisterNUICallback('createAccount', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:createAccount', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('deleteAccount', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:deleteAccount', data.accountId)
+    cb('ok')
+end)
+
+RegisterNUICallback('addSharedUser', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:addSharedUser', data.accountId, data.targetId)
+    cb('ok')
+end)
+
+RegisterNUICallback('removeSharedUser', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:removeSharedUser', data.accountId, data.targetId)
+    cb('ok')
+end)
+
+RegisterNUICallback('transfer', function(data, cb)
+    data.bankLocation = currentBankLocation
+    TriggerServerEvent('muhaddil_bank:transfer', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('deposit', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:deposit', data.accountId, data.amount, currentBankLocation)
+    cb('ok')
+end)
+
+RegisterNUICallback('withdraw', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:withdraw', data.accountId, data.amount, currentBankLocation)
+    cb('ok')
+end)
+
+RegisterNUICallback('requestLoan', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:requestLoan', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('payLoan', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:payLoan', data.loanId, data.amount)
+    cb('ok')
+end)
+
+RegisterNUICallback('purchaseBank', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:purchaseBank', data.bankId)
+    cb('ok')
+end)
+
+RegisterNUICallback('sellBank', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:sellBank', data.bankId)
+    cb('ok')
+end)
+
+RegisterNUICallback('transferBank', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:transferBank', data.bankId, data.targetPlayerId)
+    cb('ok')
+end)
+
+RegisterNUICallback('updateCommission', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:updateCommission', data.bankId, data.newRate)
+    cb('ok')
+end)
+
+RegisterNUICallback('withdrawEarnings', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:withdrawEarnings', data.bankId)
+    cb('ok')
+end)
+
+RegisterNUICallback('renameBank', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:renameBank', data.bankId, data.newName)
+    cb('ok')
+end)
+
+RegisterNUICallback('createSavings', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:createSavings', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('depositSavings', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:depositSavings', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('withdrawSavings', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:withdrawSavings', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('deleteSavings', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:deleteSavings', data.savingsId)
+    cb('ok')
+end)
+
+RegisterNUICallback('addContact', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:addContact', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('updateContact', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:updateContact', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('removeContact', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:removeContact', data.contactId)
+    cb('ok')
+end)
+
+RegisterNUICallback('createTransferRequest', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:createTransferRequest', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('acceptTransferRequest', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:acceptTransferRequest', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('rejectTransferRequest', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:rejectTransferRequest', data.requestId)
+    cb('ok')
+end)
+
+RegisterNUICallback('cancelTransferRequest', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:cancelTransferRequest', data.requestId)
+    cb('ok')
+end)
+
+RegisterNUICallback('createScheduledTransfer', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:createScheduledTransfer', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('updateScheduledTransfer', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:updateScheduledTransfer', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('toggleScheduledTransfer', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:toggleScheduledTransfer', data.transferId)
+    cb('ok')
+end)
+
+RegisterNUICallback('deleteScheduledTransfer', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:deleteScheduledTransfer', data.transferId)
+    cb('ok')
+end)
+
+RegisterNUICallback('getAdminData', function(data, cb)
+    local result = lib.callback.await('muhaddil_bank:getAdminData', false)
+    cb(result or {})
+end)
+
+RegisterNUICallback('adminSearchUser', function(data, cb)
+    local result = lib.callback.await('muhaddil_bank:adminSearchUser', false, data.query)
+    cb(result or {})
+end)
+
+RegisterNUICallback('adminAddMoney', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminAddMoney', data.accountId, data.amount)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminRemoveMoney', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminRemoveMoney', data.accountId, data.amount)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminCancelLoan', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminCancelLoan', data.loanId)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminFreezeAccount', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminFreezeAccount', data.accountId)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminDeleteScheduled', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminDeleteScheduled', data.transferId)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminCancelRequest', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminCancelRequest', data.requestId)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminDeleteSaving', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminDeleteSaving', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminDeleteContact', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminDeleteContact', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminDeleteTransaction', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminDeleteTransaction', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminRemoveSharedUser', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:adminRemoveSharedUser', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('adminGetAlerts', function(data, cb)
+    local result = lib.callback.await('muhaddil_bank:getAdminAlerts', false)
+    cb(result or {})
+end)
+
+RegisterNUICallback('createCheck', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:createCheck', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('cashCheck', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:cashCheck', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('cashCheckItem', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:cashCheckItem', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('cancelCheck', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:cancelCheck', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('forgeCheck', function(data, cb)
+    cb('ok')
+
+    CreateThread(function()
+        local completed = lib.progressBar({
+            duration = 8000,
+            label = Locale('client.forge_progress') or 'Forjando cheque...',
+            useWhileDead = false,
+            canCancel = true,
+            disable = {
+                move = true,
+                car = true,
+                combat = true,
+                mouse = false,
+            },
+            anim = {
+                dict = 'amb@prop_human_bum_bin@idle_b',
+                clip = 'idle_d',
+            }
+        })
+
+        if not completed then
+            return lib.notify({
+                type = 'error',
+                description = Locale('client.forge_cancelled') or 'Has cancelado la falsificación'
+            })
+        end
+
+        TriggerServerEvent('muhaddil_bank:forgeCheck', data)
+    end)
+end)
+
+RegisterNUICallback('getInventoryChecks', function(data, cb)
+    local result = lib.callback.await('muhaddil_bank:getInventoryChecks', false)
+    cb(result or {})
+end)
+
+RegisterNUICallback('toggleDirectDebit', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:toggleDirectDebit', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('cancelDirectDebit', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:cancelDirectDebit', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('changeDebitAccount', function(data, cb)
+    TriggerServerEvent('muhaddil_bank:changeDebitAccount', data)
+    cb('ok')
+end)
+
+RegisterNUICallback('copyToClipboard', function(data, cb)
+    if data.text then
+        lib.setClipboard(data.text)
+    end
+    cb('ok')
+end)
+
+RegisterNetEvent('muhaddil_bank:refreshData', function()
+    if not isOpen or adminPanelOpen then return end
+
+    Wait(100)
+
+    local data = lib.callback.await('muhaddil_bank:getData', false, currentBankLocation)
+    if not data then
+        return lib.notify({ type = 'error', description = Locale('client.bank_connection_error') })
+    end
+    currentBankType = data.currentBankInfo.bankType
+    commissionRate = data.currentBankInfo.commissionRate
+    bankManagementEnabled = Config.BankOwnership.Enabled
+    SendNUIMessage({
+        action = 'setData',
+        data = data,
+        currentBank = data.currentBankInfo.name,
+        currentBankId = currentBankLocation,
+        currentBankType = currentBankType,
+        commissionRate = commissionRate,
+        bankManagementEnabled = bankManagementEnabled,
+        directDebitsEnabled = Config.DirectDebits.Enabled,
+        checksEnabled = Config.Checks.Enabled,
+        scheduleChecksEnabled = Config.Checks.Enabled,
+        transferRequestsEnabled = Config.TransferRequests.Enabled,
+        contactsEnabled = Config.Contacts.Enabled,
+    })
+
+    if not Config.DisablePhoneApp and GetResourceState("apex_phone") == "started" then
+        local bankData = lib.callback.await('muhaddil_bank:phone:getData', false)
+        if bankData then
+            exports["apex_phone"]:SendCustomAppMessage('muhaddil_bank', {
+                type = "updateData",
+                data = bankData
+            })
+        end
+    end
+end)
+
+RegisterNetEvent('muhaddil_bank:refreshBlips', function()
+    CreateBlips()
+end)
+
+RegisterNetEvent('muhaddil_bank:openBank', function()
+    local playerCoords = GetEntityCoords(PlayerPedId())
+    local closestBankId = GetClosestBankId(playerCoords)
+
+    if closestBankId then
+        for _, bank in pairs(Config.BankLocations) do
+            if bank.id == closestBankId then
+                OpenBank(bank.id, bank.name)
+                break
+            end
+        end
+    else
+        lib.notify({ type = 'error', description = Locale('client.not_near_bank') })
+    end
+end)
+
+RegisterNetEvent('muhaddil_bank:openAdminPanel', function()
+    if isOpen then return end
+    isOpen = true
+    adminPanelOpen = true
+    SetNuiFocus(true, true)
+    SendNUIMessage({
+        action = 'setLocale',
+        locale = Config.Locale
+    })
+    SendNUIMessage({
+        action = 'openAdminPanel',
+    })
+end)
+
+RegisterNUICallback('closeAdmin', function(data, cb)
+    isOpen = false
+    adminPanelOpen = false
+    CloseBank()
+    cb('ok')
+end)
+
+function SetLocale()
+    Wait(1000)
+    SendNUIMessage({
+        action = 'setLocale',
+        locale = Config.Locale
+    })
+end
+
+CreateThread(function()
+    CreateBlips()
+    SetLocale()
+end)
+
+exports('OpenBankById', function(bankId)
+    if isOpen then return false end
+
+    for _, bank in pairs(Config.BankLocations) do
+        if bank.id == bankId then
+            OpenBank(bank.id, bank.name)
+            return true
+        end
+    end
+
+    return false
+end)
+
+exports('OpenNearestBank', function()
+    if isOpen then return false end
+
+    local playerCoords = GetEntityCoords(PlayerPedId())
+    local closestBankId = GetClosestBankId(playerCoords)
+
+    if not closestBankId then
+        return false
+    end
+
+    for _, bank in pairs(Config.BankLocations) do
+        if bank.id == closestBankId then
+            OpenBank(bank.id, bank.name)
+            return true
+        end
+    end
+
+    return false
+end)
+
+exports('CloseBank', function()
+    if not isOpen then return false end
+    CloseBank()
+    return true
+end)
+
+exports('IsBankOpen', function()
+    return isOpen
+end)
+
+exports('GetFramework', function()
+    return FrameWork
+end)
+
+exports('GetCurrentBank', function()
+    if not isOpen then return nil end
+
+    return {
+        bankId = currentBankLocation,
+        bankName = currentBankName
+    }
+end)
+
+exports('RefreshBankData', function()
+    if not isOpen then return false end
+
+    TriggerEvent('muhaddil_bank:refreshData')
+    return true
+end)
